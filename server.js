@@ -41,6 +41,25 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(publicPath, 'index.html'));
 });
 
+// TEMPORARY DEBUG ROUTE — lets us see what files actually exist on the
+// server without needing Shell access (which requires a paid Render plan).
+// Visit /api/debug-files in the browser to check. Safe to delete later.
+app.get('/api/debug-files', (req, res) => {
+  try {
+    const projectRoot = path.join(__dirname);
+    const result = {
+      __dirname: __dirname,
+      cwd: process.cwd(),
+      publicPathUsed: publicPath,
+      filesInDirname: fs.existsSync(__dirname) ? fs.readdirSync(__dirname) : 'does not exist',
+      filesInPublicPathUsed: fs.existsSync(publicPath) ? fs.readdirSync(publicPath) : 'does not exist',
+    };
+    res.json(result);
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
 // -----------------------------------------------------------
 // PLAID SETUP
 // PLAID_ENV controls which Plaid environment we talk to:
