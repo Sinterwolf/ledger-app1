@@ -51,6 +51,45 @@ app.get('/api/debug-files', (req, res) => {
   }
 });
 
+// TEMPORARY DEBUG ROUTE — shows the raw transactions Plaid returned, so we
+// can see why subscription detection did or didn't find matches. Safe to
+// delete later.
+app.get('/api/debug-transactions/:userId?', async (req, res) => {
+  try {
+    const userId = req.params.userId || 'default_user';
+    const accessToken = accessTokens[userId];
+    if (!accessToken) {
+      return res.status(400).json({ error: 'No connected bank account for this user yet.' });
+    }
+
+    let allTransactions = [];
+    let cursor = undefined;
+    let hasMore = true;
+    while (hasMore) {
+      const syncResponse = await plaidClient.transactionsSync({
+        access_token: accessToken,
+        cursor: cursor,
+      });
+      allTransactions = allTransactions.concat(syncResponse.data.added);
+      hasMore = syncResponse.data.has_more;
+      cursor = syncResponse.data.next_cursor;
+    }
+
+    res.json({
+      count: allTransactions.length,
+      transactions: allTransactions.map(t => ({
+        merchant_name: t.merchant_name,
+        name: t.name,
+        amount: t.amount,
+        date: t.date,
+      })),
+    });
+  } catch (err) {
+    console.error('Debug transactions error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // -----------------------------------------------------------
 // PLAID SETUP
 // PLAID_ENV controls which Plaid environment we talk to:
