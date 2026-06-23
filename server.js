@@ -6,6 +6,7 @@
 // =========================================================
 
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
@@ -13,7 +14,19 @@ const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public')); // serves the website files in /public
+
+// Use an absolute path (built from this file's own location) rather than a
+// relative one — relative paths can break depending on which folder the
+// hosting service actually starts the server from.
+const publicPath = path.join(__dirname, 'public');
+app.use(express.static(publicPath));
+
+// Explicit fallback: if someone visits the homepage "/", always serve
+// index.html directly. This guarantees the homepage works even if static
+// file serving above has any path issue.
+app.get('/', (req, res) => {
+  res.sendFile(path.join(publicPath, 'index.html'));
+});
 
 // -----------------------------------------------------------
 // PLAID SETUP
