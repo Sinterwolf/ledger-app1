@@ -19,17 +19,9 @@ app.use(express.json());
 // relative one — relative paths can break depending on which folder the
 // hosting service actually starts the server from.
 //
-// Some hosts (Render, in certain configurations) place the project files
-// inside an extra "src" subfolder. To make this work no matter where the
-// "public" folder actually lands, we check a couple of likely locations
-// and use whichever one actually exists.
+// index.html is served from the same folder as this server.js file.
 const fs = require('fs');
-const candidatePaths = [
-  path.join(__dirname, 'public'),
-  path.join(__dirname, 'src', 'public'),
-  path.join(process.cwd(), 'public'),
-];
-const publicPath = candidatePaths.find(p => fs.existsSync(p)) || candidatePaths[0];
+const publicPath = __dirname;
 console.log('Serving static files from:', publicPath);
 
 app.use(express.static(publicPath));
@@ -46,7 +38,6 @@ app.get('/', (req, res) => {
 // Visit /api/debug-files in the browser to check. Safe to delete later.
 app.get('/api/debug-files', (req, res) => {
   try {
-    const projectRoot = path.join(__dirname);
     const result = {
       __dirname: __dirname,
       cwd: process.cwd(),
