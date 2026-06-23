@@ -18,7 +18,20 @@ app.use(express.json());
 // Use an absolute path (built from this file's own location) rather than a
 // relative one — relative paths can break depending on which folder the
 // hosting service actually starts the server from.
-const publicPath = path.join(__dirname, 'public');
+//
+// Some hosts (Render, in certain configurations) place the project files
+// inside an extra "src" subfolder. To make this work no matter where the
+// "public" folder actually lands, we check a couple of likely locations
+// and use whichever one actually exists.
+const fs = require('fs');
+const candidatePaths = [
+  path.join(__dirname, 'public'),
+  path.join(__dirname, 'src', 'public'),
+  path.join(process.cwd(), 'public'),
+];
+const publicPath = candidatePaths.find(p => fs.existsSync(p)) || candidatePaths[0];
+console.log('Serving static files from:', publicPath);
+
 app.use(express.static(publicPath));
 
 // Explicit fallback: if someone visits the homepage "/", always serve
