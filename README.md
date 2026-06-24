@@ -114,6 +114,68 @@ transaction detection, results page) is proven to work.
 
 ---
 
+---
+
+## Step 6 — Add Stripe (the $15/month paywall)
+
+This part lets people actually pay $15/month, and lets you test that
+whole flow safely using fake test cards before any real money is
+involved.
+
+### 6a. Create a free Stripe account
+
+1. Go to **dashboard.stripe.com/register** and sign up free.
+2. Once in, make sure you're in **Test mode** — there's a toggle for
+   this, usually top-right of the dashboard. Test mode lets you use fake
+   card numbers that never charge real money.
+3. Go to **Developers → API keys** (left sidebar).
+4. Copy the **Secret key** (starts with `sk_test_...`). Save it
+   somewhere safe, same as you did with your Plaid keys.
+
+### 6b. Set up the webhook (so the app knows when someone paid)
+
+1. Still in Test mode, go to **Developers → Webhooks**.
+2. Click **Add endpoint**.
+3. For the endpoint URL, use your Render URL + `/api/stripe-webhook`,
+   e.g. `https://ledger-app1.onrender.com/api/stripe-webhook`.
+4. Under "Select events to listen to," add:
+   - `checkout.session.completed`
+   - `customer.subscription.deleted`
+5. Click **Add endpoint**.
+6. On the endpoint's page, find **Signing secret** (starts with
+   `whsec_...`) and reveal/copy it. Save it too.
+
+### 6c. Add the new keys to Render
+
+1. Go to Render → your service → **Environment**.
+2. Add two new Environment Variables:
+
+   | Key | Value |
+   |---|---|
+   | `STRIPE_SECRET_KEY` | (your `sk_test_...` key) |
+   | `STRIPE_WEBHOOK_SECRET` | (your `whsec_...` key) |
+
+3. Save — Render will redeploy automatically.
+
+### 6d. Test the whole flow with a fake card
+
+1. On your live site, click "Cancel" on any idle subscription — this
+   should now show the $15/mo paywall.
+2. Click "Subscribe for $15/mo" — you'll be redirected to a real
+   Stripe Checkout page (still totally safe, still Test mode).
+3. Use Stripe's official test card: **4242 4242 4242 4242**, any future
+   expiration date, any 3-digit CVC, any name/ZIP.
+4. Complete checkout — you should be redirected back to your site with
+   a "Subscription active" confirmation.
+5. Now clicking "Cancel" on an idle subscription should open the real
+   step-by-step cancellation instructions instead of the paywall.
+
+If the paywall keeps reappearing after checkout, give it a few seconds
+— the app waits briefly for Stripe's webhook to confirm payment before
+unlocking access.
+
+---
+
 ## If something breaks
 
 - Visit `https://your-render-url.onrender.com/api/health` directly in your
@@ -122,3 +184,6 @@ transaction detection, results page) is proven to work.
   start — check the Render logs for red error text.
 - Render's **Logs** tab (left sidebar of your service) shows everything the
   server prints — most errors will explain themselves there.
+- For Stripe issues specifically, **Developers → Webhooks** in the Stripe
+  dashboard shows a log of every webhook attempt and whether it succeeded
+  or failed — very useful for seeing exactly what went wrong.
