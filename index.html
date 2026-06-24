@@ -187,7 +187,7 @@ async function exchangeToken(public_token) {
       body: JSON.stringify({ public_token, userId: 'default_user' }),
     });
 
-    document.getElementById('loadingText').textContent = 'READING TRANSACTIONS… (may take up to 10 seconds)';
+    document.getElementById('loadingText').textContent = 'READING TRANSACTIONS…';
     await loadTransactions();
   } catch (err) {
     showError('Failed to link your account: ' + err.message);
@@ -198,17 +198,6 @@ async function loadTransactions() {
   try {
     const res = await fetch(API_BASE + '/api/transactions/default_user');
     const data = await res.json();
-
-    // TEMPORARY DEBUG: show exactly what came back, right on the page,
-    // since Dev Tools aren't available to check this directly.
-    let debugBox = document.getElementById('debugBox');
-    if (!debugBox) {
-      debugBox = document.createElement('div');
-      debugBox.id = 'debugBox';
-      debugBox.style.cssText = 'background:#000;color:#0f0;font-family:monospace;font-size:11px;padding:14px;margin-top:20px;border-radius:8px;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;';
-      document.querySelector('#results .wrap').appendChild(debugBox);
-    }
-    debugBox.textContent = 'RAW API RESPONSE:\n' + JSON.stringify(data, null, 2);
 
     if (data.error) {
       throw new Error(data.error);
@@ -222,37 +211,26 @@ async function loadTransactions() {
 }
 
 function renderResults(subscriptions) {
-  try {
-    const idleList = document.getElementById('idleList');
-    const activeList = document.getElementById('activeList');
-    idleList.innerHTML = '';
-    activeList.innerHTML = '';
+  const idleList = document.getElementById('idleList');
+  const activeList = document.getElementById('activeList');
+  idleList.innerHTML = '';
+  activeList.innerHTML = '';
 
-    const idle = subscriptions.filter(s => s.isIdle);
-    const active = subscriptions.filter(s => !s.isIdle);
+  const idle = subscriptions.filter(s => s.isIdle);
+  const active = subscriptions.filter(s => !s.isIdle);
 
-    let idleTotal = idle.reduce((sum, s) => sum + s.averageAmount, 0);
-    document.getElementById('resultsTotal').textContent = '$' + idleTotal.toFixed(2);
+  let idleTotal = idle.reduce((sum, s) => sum + s.averageAmount, 0);
+  document.getElementById('resultsTotal').textContent = '$' + idleTotal.toFixed(2);
 
-    if (idle.length === 0) {
-      idleList.innerHTML = '<div class="empty-state">Nothing flagged as idle right now — nice.</div>';
-    }
-    idle.forEach(s => idleList.appendChild(buildCard(s, true)));
-
-    if (active.length === 0) {
-      activeList.innerHTML = '<div class="empty-state">No other recurring charges detected yet.</div>';
-    }
-    active.forEach(s => activeList.appendChild(buildCard(s, false)));
-  } catch (err) {
-    let debugBox = document.getElementById('debugBox');
-    if (!debugBox) {
-      debugBox = document.createElement('div');
-      debugBox.id = 'debugBox';
-      debugBox.style.cssText = 'background:#000;color:#f55;font-family:monospace;font-size:11px;padding:14px;margin-top:20px;border-radius:8px;white-space:pre-wrap;word-break:break-all;';
-      document.querySelector('#results .wrap').appendChild(debugBox);
-    }
-    debugBox.textContent = 'RENDER ERROR: ' + err.message + '\n' + err.stack;
+  if (idle.length === 0) {
+    idleList.innerHTML = '<div class="empty-state">Nothing flagged as idle right now — nice.</div>';
   }
+  idle.forEach(s => idleList.appendChild(buildCard(s, true)));
+
+  if (active.length === 0) {
+    activeList.innerHTML = '<div class="empty-state">No other recurring charges detected yet.</div>';
+  }
+  active.forEach(s => activeList.appendChild(buildCard(s, false)));
 }
 
 function buildCard(s, isIdle) {
