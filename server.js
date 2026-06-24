@@ -10,6 +10,7 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
+const Stripe = require('stripe');
 
 const app = express();
 app.use(cors());
@@ -54,6 +55,24 @@ const plaidClient = new PlaidApi(configuration);
 // users. A real public product would use a real database instead,
 // since this resets every time the server restarts.
 const accessTokens = {};
+
+// -----------------------------------------------------------
+// STRIPE SETUP
+// Stripe handles the actual $15/month billing. We use "Stripe Checkout" —
+// a secure, pre-built payment page hosted BY Stripe, not by us. This means
+// we never touch or see real card numbers, which is both simpler and much
+// safer than building our own payment form.
+//
+// STRIPE_SECRET_KEY is set as an Environment Variable in Render, same as
+// the Plaid keys — never written directly in this file.
+// -----------------------------------------------------------
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+
+// In-memory tracking of who has an active $15/mo subscription, keyed by
+// the same simple user id used for Plaid. Like accessTokens above, this
+// resets if the server restarts — fine for personal/testing use, but a
+// real product would use a permanent database instead.
+const paidSubscribers = {};
 
 // -----------------------------------------------------------
 // 1. CREATE LINK TOKEN
@@ -246,7 +265,103 @@ function detectRecurringCharges(transactions) {
 // visiting the URL in a browser.
 // -----------------------------------------------------------
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', environment: PLAID_ENV });
+  res.json({
+    status: 'ok',
+    environment: PLAID_ENV,
+    stripeConfigured: !!process.env.STRIPE_SECRET_KEY,
+  });
+});
+
+// -----------------------------------------------------------
+// STRIPE: 1. CREATE CHECKOUT SESSION
+// The frontend calls this when someone clicks "Subscribe for $15/mo".
+// We create a Stripe Checkout Session and send back its URL — the
+// frontend then redirects the browser there. The actual card entry
+// happens entirely on Stripe's own secure page, not on our site.
+// -----------------------------------------------------------
+app.post('/api/create_checkout_session', async (req, res) => {
+  try {
+    const userId = req.body.userId || 'default_user';
+    const origin = req.headers.origin || `https://${req.headers.host}`;
+
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: { name: 'Ledger Plus — cancel idle subscriptions' },
+            unit_amount: 1500, // $15.00, in cents
+            recurring: { interval: 'month' },
+          },
+          quantity: 1,
+        },
+      ],
+      client_reference_id: userId,
+      metadata: { userId },
+      success_url: `${origin}/?subscribed=true`,
+      cancel_url: `${origin}/`,
+    });
+
+    res.json({ url: session.url });
+  } catch (err) {
+    console.error('Error creating checkout session:', err.message);
+    res.status(500).json({ error: 'Failed to create checkout session' });
+  }
+});
+
+// -----------------------------------------------------------
+// STRIPE: 2. WEBHOOK — the real source of truth for "did they pay"
+// Stripe calls this endpoint directly (server to server) once payment
+// actually succeeds. We deliberately do NOT rely on the success_url
+// redirect alone to grant access — a person could close their browser
+// tab right after paying, before the redirect finishes, and we'd never
+// know they paid. The webhook is reliable even if that happens.
+//
+// NOTE: this route needs the RAW request body (not JSON-parsed) to
+// verify Stripe's signature, so it's defined with express.raw() instead
+// of relying on the global express.json() middleware above.
+// -----------------------------------------------------------
+app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.client_reference_id || session.metadata?.userId || 'default_user';
+    paidSubscribers[userId] = true;
+    console.log(`Payment confirmed for user: ${userId}`);
+  }
+
+  // Also handle cancellations, so access is revoked if they unsubscribe later.
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    const userId = subscription.metadata?.userId;
+    if (userId) {
+      paidSubscribers[userId] = false;
+      console.log(`Subscription canceled for user: ${userId}`);
+    }
+  }
+
+  res.json({ received: true });
+});
+
+// -----------------------------------------------------------
+// STRIPE: 3. CHECK SUBSCRIPTION STATUS
+// The frontend calls this to find out whether to show the paywall or
+// let the person through to cancel subscriptions.
+// -----------------------------------------------------------
+app.get('/api/subscription-status/:userId?', (req, res) => {
+  const userId = req.params.userId || 'default_user';
+  res.json({ isSubscribed: !!paidSubscribers[userId] });
 });
 
 const PORT = process.env.PORT || 3000;
