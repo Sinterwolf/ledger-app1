@@ -15,15 +15,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Use an absolute path (built from this file's own location) rather than a
-// relative one — relative paths can break depending on which folder the
-// hosting service actually starts the server from.
-//
-// index.html is served from the same folder as this server.js file.
-const fs = require('fs');
+// Serve the website files (index.html and friends) from the same folder
+// as this server.js file.
 const publicPath = __dirname;
-console.log('Serving static files from:', publicPath);
-
 app.use(express.static(publicPath));
 
 // Explicit fallback: if someone visits the homepage "/", always serve
@@ -31,63 +25,6 @@ app.use(express.static(publicPath));
 // file serving above has any path issue.
 app.get('/', (req, res) => {
   res.sendFile(path.join(publicPath, 'index.html'));
-});
-
-// TEMPORARY DEBUG ROUTE — lets us see what files actually exist on the
-// server without needing Shell access (which requires a paid Render plan).
-// Visit /api/debug-files in the browser to check. Safe to delete later.
-app.get('/api/debug-files', (req, res) => {
-  try {
-    const result = {
-      __dirname: __dirname,
-      cwd: process.cwd(),
-      publicPathUsed: publicPath,
-      filesInDirname: fs.existsSync(__dirname) ? fs.readdirSync(__dirname) : 'does not exist',
-      filesInPublicPathUsed: fs.existsSync(publicPath) ? fs.readdirSync(publicPath) : 'does not exist',
-    };
-    res.json(result);
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
-// TEMPORARY DEBUG ROUTE — shows the raw transactions Plaid returned, so we
-// can see why subscription detection did or didn't find matches. Safe to
-// delete later.
-app.get('/api/debug-transactions/:userId?', async (req, res) => {
-  try {
-    const userId = req.params.userId || 'default_user';
-    const accessToken = accessTokens[userId];
-    if (!accessToken) {
-      return res.status(400).json({ error: 'No connected bank account for this user yet.' });
-    }
-
-    let allTransactions = [];
-    let cursor = undefined;
-    let hasMore = true;
-    while (hasMore) {
-      const syncResponse = await plaidClient.transactionsSync({
-        access_token: accessToken,
-        cursor: cursor,
-      });
-      allTransactions = allTransactions.concat(syncResponse.data.added);
-      hasMore = syncResponse.data.has_more;
-      cursor = syncResponse.data.next_cursor;
-    }
-
-    res.json({
-      count: allTransactions.length,
-      transactions: allTransactions.map(t => ({
-        merchant_name: t.merchant_name,
-        name: t.name,
-        amount: t.amount,
-        date: t.date,
-      })),
-    });
-  } catch (err) {
-    console.error('Debug transactions error:', err.response?.data || err.message);
-    res.status(500).json({ error: err.message });
-  }
 });
 
 // -----------------------------------------------------------
@@ -228,7 +165,7 @@ app.get('/api/transactions/:userId?', async (req, res) => {
     }
 
     const subscriptions = detectRecurringCharges(allTransactions);
-    res.json({ subscriptions, transactionCount: allTransactions.length, retriesNeeded: attempts });
+    res.json({ subscriptions });
   } catch (err) {
     console.error('Error fetching transactions:', err.response?.data || err.message);
     res.status(500).json({ error: 'Failed to fetch transactions' });
