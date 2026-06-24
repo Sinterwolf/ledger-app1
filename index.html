@@ -74,6 +74,46 @@
   .empty-state { text-align: center; padding: 40px 20px; color: var(--muted-on-ink); font-size: 14px; }
   .error-box { background: rgba(231,111,81,0.15); border: 1px solid var(--coral); border-radius: 10px; padding: 16px; color: var(--paper); font-size: 14px; margin-top: 20px; text-align: left; }
   .back-link { margin-top: 24px; background: none; color: var(--muted-on-ink); text-decoration: underline; font-size: 13px; }
+
+  .cancel-btn { background: var(--ink); color: var(--paper); font-size: 12px; font-weight: 600; padding: 9px 14px; border-radius: 8px; flex-shrink: 0; white-space: nowrap; transition: background 0.15s; }
+  .cancel-btn:hover { background: var(--coral-dark); }
+  .cancel-btn.done { background: var(--forest); cursor: default; }
+  .cancel-btn:disabled { opacity: 0.6; cursor: wait; }
+
+  /* paywall sheet */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(10,14,28,0.7); display: none; align-items: flex-end; justify-content: center; z-index: 50; backdrop-filter: blur(3px); }
+  .modal-backdrop.active { display: flex; animation: fadeIn 0.2s ease; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .modal-backdrop.centered { align-items: center; padding: 20px; }
+
+  .paywall-sheet { background: var(--paper); color: var(--ink); width: 100%; max-width: 480px; border-radius: 20px 20px 0 0; padding: 32px 28px 36px; animation: slideUp 0.3s ease; }
+  @keyframes slideUp { from { transform: translateY(30px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  .paywall-sheet .lock-row { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+  .paywall-sheet .lock-row .eyebrow { margin: 0; color: var(--forest); }
+  .paywall-sheet h2 { font-size: 24px; margin-bottom: 8px; }
+  .paywall-sheet p.desc { color: var(--muted); font-size: 14px; line-height: 1.6; margin-bottom: 22px; }
+  .price-row { display: flex; align-items: baseline; gap: 6px; margin-bottom: 22px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+  .price-row .amt { font-family: 'Fraunces', serif; font-size: 40px; font-weight: 600; }
+  .price-row .per { color: var(--muted); font-size: 14px; }
+  .unlock-list { list-style: none; padding: 0; margin: 0 0 24px; display: flex; flex-direction: column; gap: 10px; }
+  .unlock-list li { display: flex; gap: 10px; font-size: 14px; align-items: flex-start; }
+  .unlock-list li .ck { color: var(--forest); font-weight: 700; flex-shrink: 0; }
+  .paywall-close { background: none; color: var(--muted); font-size: 13px; width: 100%; text-align: center; margin-top: 14px; text-decoration: underline; }
+  .test-card-hint { background: var(--paper-dim); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; margin-bottom: 18px; line-height: 1.6; }
+
+  /* cancel instructions modal */
+  .modal-card { background: var(--paper); color: var(--ink); border-radius: 16px; max-width: 400px; width: 100%; padding: 26px 24px; }
+  .modal-card h3 { font-size: 19px; margin-bottom: 6px; }
+  .modal-card .modal-meta { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+  .modal-card p.note { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 20px; }
+  .modal-actions { display: flex; gap: 10px; }
+  .modal-actions button { flex: 1; }
+  .btn-secondary { background: var(--paper-dim); color: var(--ink); font-size: 14px; font-weight: 600; padding: 13px; border-radius: 9px; }
+  .btn-confirm { background: var(--forest); color: white; font-size: 14px; font-weight: 600; padding: 13px; border-radius: 9px; }
+
+  /* toast */
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--forest); color: white; padding: 14px 22px; border-radius: 10px; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 10px; opacity: 0; transition: all 0.3s ease; z-index: 60; pointer-events: none; max-width: 90%; text-align: center; }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
@@ -115,8 +155,63 @@
   </div>
 </div>
 
+<!-- Paywall sheet -->
+<div class="modal-backdrop" id="paywallBackdrop">
+  <div class="paywall-sheet">
+    <div class="lock-row"><p class="eyebrow">🔒 Unlock cancellation</p></div>
+    <h2>Cancel idle subscriptions for you</h2>
+    <p class="desc">Anyone can see what's idle for free. Ledger Plus walks you through canceling each one and keeps watching every month so new idle charges don't slip through.</p>
+    <div class="price-row">
+      <span class="amt num">$15</span>
+      <span class="per">/ month</span>
+    </div>
+    <ul class="unlock-list">
+      <li><span class="ck">✓</span> Step-by-step cancellation for every flagged subscription</li>
+      <li><span class="ck">✓</span> Monthly re-scan so nothing creeps back</li>
+      <li><span class="ck">✓</span> Cancel anytime, no lock-in</li>
+    </ul>
+    <div class="test-card-hint">TEST MODE — use card 4242 4242 4242 4242, any future date, any CVC.</div>
+    <button class="btn-primary" id="subscribeBtn" style="background:var(--forest); color:white;">Subscribe for $15/mo</button>
+    <button class="paywall-close" id="paywallCloseBtn">Not right now</button>
+  </div>
+</div>
+
+<!-- Cancel instructions modal -->
+<div class="modal-backdrop centered" id="cancelModal">
+  <div class="modal-card" id="cancelModalContent"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
 <script>
 const API_BASE = ''; // same-origin, since the server also serves this page
+let isSubscribed = false;
+let currentSubscriptions = []; // keeps the latest scan results in memory for the cancel modal
+
+// Step-by-step cancellation instructions for merchants we recognize.
+// For anything not listed here, we fall back to generic guidance.
+const CANCEL_GUIDES = {
+  netflix: ['Go to netflix.com and sign in', 'Click your profile icon → Account', 'Under "Membership & Billing," select "Cancel Membership"', 'Confirm cancellation'],
+  spotify: ['Go to spotify.com/account', 'Click "Subscription"', 'Select "Cancel Premium"', 'Confirm — you\'ll keep access until the end of the billing period'],
+  openai: ['Go to chatgpt.com and sign in', 'Click your profile → Settings → Subscription', 'Select "Manage my subscription"', 'Choose "Cancel Plan" and confirm'],
+  'planet fitness': ['Open the Planet Fitness app or visit planetfitness.com', 'Go to Account → Membership', 'Select "Cancel Membership"', 'Note: some locations require an in-person visit or signed form'],
+  'amazon prime': ['Go to amazon.com/prime', 'Click "Manage Membership"', 'Select "End Membership"', 'Confirm cancellation'],
+  audible: ['Go to audible.com → Account Details', 'Scroll to "Membership"', 'Click "Cancel Membership"', 'Decline any retention offers if you want to fully cancel'],
+};
+
+function getCancelSteps(merchantName) {
+  const key = (merchantName || '').toLowerCase();
+  for (const guideKey in CANCEL_GUIDES) {
+    if (key.includes(guideKey)) return CANCEL_GUIDES[guideKey];
+  }
+  // Generic fallback for anything we don't have specific steps for.
+  return [
+    `Search for "${merchantName} cancel subscription" or visit their website directly`,
+    'Look for "Account," "Billing," or "Subscription" settings',
+    'Select the cancel or end membership option',
+    'Confirm cancellation — some services may offer a discount to stay; decline if you want to fully cancel',
+  ];
+}
 
 function goTo(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -137,6 +232,9 @@ fetch(API_BASE + '/api/health')
   .catch(() => {
     document.getElementById('envBadge').textContent = 'SERVER UNREACHABLE — CHECK SETUP';
   });
+
+checkSubscriptionStatus();
+handlePostCheckoutReturn();
 
 document.getElementById('connectBtn').addEventListener('click', startPlaidLink);
 document.getElementById('backBtn').addEventListener('click', () => goTo('landing'));
@@ -211,6 +309,8 @@ async function loadTransactions() {
 }
 
 function renderResults(subscriptions) {
+  currentSubscriptions = subscriptions; // keep for the cancel modal to reference later
+
   const idleList = document.getElementById('idleList');
   const activeList = document.getElementById('activeList');
   idleList.innerHTML = '';
@@ -225,7 +325,7 @@ function renderResults(subscriptions) {
   if (idle.length === 0) {
     idleList.innerHTML = '<div class="empty-state">Nothing flagged as idle right now — nice.</div>';
   }
-  idle.forEach(s => idleList.appendChild(buildCard(s, true)));
+  idle.forEach((s, originalIndex) => idleList.appendChild(buildCard(s, true, subscriptions.indexOf(s))));
 
   if (active.length === 0) {
     activeList.innerHTML = '<div class="empty-state">No other recurring charges detected yet.</div>';
@@ -233,10 +333,13 @@ function renderResults(subscriptions) {
   active.forEach(s => activeList.appendChild(buildCard(s, false)));
 }
 
-function buildCard(s, isIdle) {
+function buildCard(s, isIdle, subscriptionIndex) {
   const card = document.createElement('div');
   card.className = 'sub-card';
   const initial = (s.merchant || '?').charAt(0).toUpperCase();
+  const cancelButtonHtml = isIdle
+    ? `<button class="cancel-btn" data-sub-index="${subscriptionIndex}">Cancel</button>`
+    : '';
   card.innerHTML = `
     <div class="sub-icon ${isIdle ? 'idle' : ''}">${initial}</div>
     <div class="sub-info">
@@ -247,7 +350,11 @@ function buildCard(s, isIdle) {
       <div class="amt">$${s.averageAmount.toFixed(2)}</div>
       <div class="freq">/${s.frequency.toLowerCase()}</div>
     </div>
+    ${cancelButtonHtml}
   `;
+  if (isIdle) {
+    card.querySelector('.cancel-btn').addEventListener('click', (e) => handleCancelClick(parseInt(e.target.dataset.subIndex, 10), e.target));
+  }
   return card;
 }
 
@@ -261,6 +368,128 @@ function showError(message) {
     document.querySelector('#landing .wrap').appendChild(box);
   }
   box.textContent = '⚠ ' + message;
+}
+
+// -----------------------------------------------------------
+// CANCEL FLOW + $15 PAYWALL
+// -----------------------------------------------------------
+
+function handleCancelClick(subscriptionIndex, buttonEl) {
+  if (!isSubscribed) {
+    document.getElementById('paywallBackdrop').classList.add('active');
+    return;
+  }
+  openCancelModal(subscriptionIndex, buttonEl);
+}
+
+function openCancelModal(subscriptionIndex, buttonEl) {
+  const sub = currentSubscriptions[subscriptionIndex];
+  const steps = getCancelSteps(sub.merchant);
+  const content = document.getElementById('cancelModalContent');
+  content.innerHTML = `
+    <h3>Cancel ${sub.merchant}</h3>
+    <p class="modal-meta">$${sub.averageAmount.toFixed(2)}/${sub.frequency.toLowerCase()} · We'll walk you through it</p>
+    <ol style="padding-left:20px; margin:0 0 20px; display:flex; flex-direction:column; gap:10px; font-size:14px; line-height:1.5;">
+      ${steps.map(s => `<li>${s}</li>`).join('')}
+    </ol>
+    <p class="note">Ledger can't cancel this for you automatically — no service offers a universal way to do that. This just walks you through it.</p>
+    <div class="modal-actions">
+      <button class="btn-secondary" id="cancelModalDismiss">Not now</button>
+      <button class="btn-confirm" id="cancelModalConfirm">Mark as canceled</button>
+    </div>
+  `;
+  document.getElementById('cancelModalDismiss').addEventListener('click', closeCancelModal);
+  document.getElementById('cancelModalConfirm').addEventListener('click', () => confirmCancel(subscriptionIndex, buttonEl));
+  document.getElementById('cancelModal').classList.add('active');
+}
+
+function closeCancelModal() {
+  document.getElementById('cancelModal').classList.remove('active');
+}
+
+function confirmCancel(subscriptionIndex, buttonEl) {
+  closeCancelModal();
+  const sub = currentSubscriptions[subscriptionIndex];
+  const card = buttonEl.closest('.sub-card');
+  card.style.opacity = '0.5';
+  buttonEl.textContent = 'Canceled ✓';
+  buttonEl.classList.add('done');
+  buttonEl.disabled = true;
+  buttonEl.replaceWith(buttonEl.cloneNode(true)); // strips the old click listener
+  showToast(`${sub.merchant} marked canceled — you'll save roughly $${estimateAnnualSavings(sub)}/yr`);
+}
+
+function estimateAnnualSavings(sub) {
+  const periodsPerYear = { WEEKLY: 52, BIWEEKLY: 26, MONTHLY: 12, QUARTERLY: 4, ANNUAL: 1 };
+  const perYear = periodsPerYear[sub.frequency] || 12;
+  return Math.round(sub.averageAmount * perYear);
+}
+
+function showToast(message) {
+  const toast = document.getElementById('toast');
+  toast.textContent = message;
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 3500);
+}
+
+document.getElementById('paywallCloseBtn').addEventListener('click', () => {
+  document.getElementById('paywallBackdrop').classList.remove('active');
+});
+
+document.getElementById('subscribeBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('subscribeBtn');
+  btn.disabled = true;
+  btn.textContent = 'Redirecting to checkout…';
+  try {
+    const res = await fetch(API_BASE + '/api/create_checkout_session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'default_user' }),
+    });
+    const data = await res.json();
+    if (data.url) {
+      window.location.href = data.url; // send the browser to Stripe's secure checkout page
+    } else {
+      throw new Error(data.error || 'Could not start checkout.');
+    }
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = 'Subscribe for $15/mo';
+    showToast('Something went wrong starting checkout: ' + err.message);
+  }
+});
+
+async function checkSubscriptionStatus() {
+  try {
+    const res = await fetch(API_BASE + '/api/subscription-status/default_user');
+    const data = await res.json();
+    isSubscribed = !!data.isSubscribed;
+  } catch (err) {
+    isSubscribed = false;
+  }
+}
+
+// If we just got redirected back from a successful Stripe checkout, the
+// URL will contain "?subscribed=true". Stripe's webhook is the real
+// source of truth for granting access, but the webhook can take a
+// moment, so we show an optimistic "thank you" message immediately and
+// re-check status (with a short retry) to confirm.
+async function handlePostCheckoutReturn() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('subscribed') !== 'true') return;
+
+  showToast('Thanks! Confirming your subscription…');
+  // Clean the URL so refreshing doesn't re-trigger this.
+  window.history.replaceState({}, document.title, window.location.pathname);
+
+  for (let i = 0; i < 5; i++) {
+    await checkSubscriptionStatus();
+    if (isSubscribed) {
+      showToast('Subscription active — you can now cancel idle subscriptions.');
+      return;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+  }
 }
 </script>
 
