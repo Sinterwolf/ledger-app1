@@ -244,7 +244,17 @@ function detectRecurringCharges(transactions) {
     const daysSinceLastCharge = Math.floor((Date.now() - new Date(lastCharge.date).getTime()) / (1000 * 60 * 60 * 24));
 
     // Idle if we're overdue for the next expected charge by a good margin
-    const isIdle = daysSinceLastCharge > avgGapDays + 30;
+    let isIdle = daysSinceLastCharge > avgGapDays + 30;
+
+    // TEMPORARY TESTING OVERRIDE — forces the very first detected
+    // subscription to show as "idle" so the cancel/paywall flow can be
+    // tested even when the real test data has nothing genuinely idle.
+    // Only active when FORCE_IDLE_FOR_TESTING=true is set in Render's
+    // Environment Variables. Remove this block (and the env var) once
+    // testing is done.
+    if (process.env.FORCE_IDLE_FOR_TESTING === 'true' && subscriptions.length === 0) {
+      isIdle = true;
+    }
 
     subscriptions.push({
       merchant,
