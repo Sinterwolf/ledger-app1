@@ -14,6 +14,54 @@ const Stripe = require('stripe');
 
 const app = express();
 app.use(cors());
+
+// -----------------------------------------------------------
+// STRIPE WEBHOOK ROUTE — defined here, BEFORE the global JSON parser
+// below. This is important: Stripe's signature check needs the raw,
+// unparsed request body. If this route were defined after
+// app.use(express.json()), the global parser would already have
+// consumed and transformed the body before this route ever saw it,
+// and signature verification would fail every time (exactly the bug
+// we hit and fixed). express.raw() here ensures this specific route
+// gets the untouched raw bytes Stripe actually signed.
+//
+// The stripe client and paidSubscribers tracker are set up further
+// below; this route just needs raw-body handling registered early —
+// the actual function body runs later when Stripe calls it.
+// -----------------------------------------------------------
+app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.error('Webhook signature verification failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object;
+    const userId = session.client_reference_id || session.metadata?.userId || 'default_user';
+    paidSubscribers[userId] = true;
+    console.log(`Payment confirmed for user: ${userId}`);
+  }
+
+  // Also handle cancellations, so access is revoked if they unsubscribe later.
+  if (event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object;
+    const userId = subscription.metadata?.userId;
+    if (userId) {
+      paidSubscribers[userId] = false;
+      console.log(`Subscription canceled for user: ${userId}`);
+    }
+  }
+
+  res.json({ received: true });
+});
+
+// All other routes use normal JSON parsing — registered AFTER the
+// webhook route above, so it doesn't interfere with that one.
 app.use(express.json());
 
 // Serve the website files (index.html and friends) from the same folder
@@ -322,47 +370,10 @@ app.post('/api/create_checkout_session', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// STRIPE: 2. WEBHOOK — the real source of truth for "did they pay"
-// Stripe calls this endpoint directly (server to server) once payment
-// actually succeeds. We deliberately do NOT rely on the success_url
-// redirect alone to grant access — a person could close their browser
-// tab right after paying, before the redirect finishes, and we'd never
-// know they paid. The webhook is reliable even if that happens.
-//
-// NOTE: this route needs the RAW request body (not JSON-parsed) to
-// verify Stripe's signature, so it's defined with express.raw() instead
-// of relying on the global express.json() middleware above.
+// STRIPE: 2. WEBHOOK
+// (Defined earlier in this file, before the global JSON parser — see
+// the comment near the top explaining why. Nothing else needed here.)
 // -----------------------------------------------------------
-app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
-  }
-
-  if (event.type === 'checkout.session.completed') {
-    const session = event.data.object;
-    const userId = session.client_reference_id || session.metadata?.userId || 'default_user';
-    paidSubscribers[userId] = true;
-    console.log(`Payment confirmed for user: ${userId}`);
-  }
-
-  // Also handle cancellations, so access is revoked if they unsubscribe later.
-  if (event.type === 'customer.subscription.deleted') {
-    const subscription = event.data.object;
-    const userId = subscription.metadata?.userId;
-    if (userId) {
-      paidSubscribers[userId] = false;
-      console.log(`Subscription canceled for user: ${userId}`);
-    }
-  }
-
-  res.json({ received: true });
-});
 
 // -----------------------------------------------------------
 // STRIPE: 3. CHECK SUBSCRIPTION STATUS
