@@ -40,6 +40,11 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req,
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
+  // Unconditional diagnostic log — printed for EVERY webhook delivery so we
+  // can confirm in Render logs exactly what event type and payload arrived.
+  console.log('Webhook received — event.type:', event.type, '| event.id:', event.id);
+  console.log('Webhook event.data.object:', JSON.stringify(event.data.object, null, 2));
+
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const userId = session.client_reference_id || session.metadata?.userId || 'default_user';
