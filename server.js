@@ -30,15 +30,13 @@ const redis = new Redis({
 function accessTokenKey(userId) { return `access_token:${userId}`; }
 function subscriberKey(userId) { return `subscriber:${userId}`; }
 
+// Upstash REST API may deserialize 'true' as a boolean; handle both.
+function isSubscriberValue(val) {
+  return val === true || val === 'true';
+}
+
 // -----------------------------------------------------------
 // STRIPE WEBHOOK ROUTE — defined here, BEFORE the global JSON parser
-// below. This is important: Stripe's signature check needs the raw,
-// unparsed request body. If this route were defined after
-// app.use(express.json()), the global parser would already have
-// consumed and transformed the body before this route ever saw it,
-// and signature verification would fail every time (exactly the bug
-// we hit and fixed). express.raw() here ensures this specific route
-// gets the untouched raw bytes Stripe actually signed.
 // -----------------------------------------------------------
 app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -76,14 +74,9 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async
 // webhook route above, so it doesn't interfere with that one.
 app.use(express.json());
 
-// Serve the website files (index.html and friends) from the same folder
-// as this server.js file.
 const publicPath = __dirname;
 app.use(express.static(publicPath));
 
-// Explicit fallback: if someone visits the homepage "/", always serve
-// index.html directly. This guarantees the homepage works even if static
-// file serving above has any path issue.
 app.get('/', (req, res) => {
   res.sendFile(path.join(publicPath, 'index.html'));
 });
@@ -116,7 +109,6 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 app.post('/api/create_link_token', async (req, res) => {
   try {
     const userId = req.body.userId || 'default_user';
-
     const response = await plaidClient.linkTokenCreate({
       user: { client_user_id: userId },
       client_name: 'Ledger',
@@ -124,7 +116,6 @@ app.post('/api/create_link_token', async (req, res) => {
       country_codes: ['US'],
       language: 'en',
     });
-
     res.json({ link_token: response.data.link_token });
   } catch (err) {
     console.error('Error creating link token:', err.response?.data || err.message);
@@ -138,14 +129,9 @@ app.post('/api/create_link_token', async (req, res) => {
 app.post('/api/exchange_public_token', async (req, res) => {
   try {
     const { public_token, userId } = req.body;
-
-    const response = await plaidClient.itemPublicTokenExchange({
-      public_token,
-    });
-
+    const response = await plaidClient.itemPublicTokenExchange({ public_token });
     const accessToken = response.data.access_token;
     await redis.set(accessTokenKey(userId || 'default_user'), accessToken);
-
     res.json({ success: true });
   } catch (err) {
     console.error('Error exchanging token:', err.response?.data || err.message);
@@ -161,8 +147,6 @@ function sleep(ms) {
 }
 
 async function fetchAllTransactions(accessToken) {
-  // Retry the full pagination from scratch if Plaid reports that the
-  // underlying data changed mid-page (TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION).
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       let allTransactions = [];
@@ -203,8 +187,6 @@ app.get('/api/transactions/:userId?', async (req, res) => {
 
     let allTransactions = await fetchAllTransactions(accessToken);
 
-    // Retry up to 4 times if Plaid hasn't finished preparing data yet
-    // on a freshly linked account.
     let attempts = 0;
     while (allTransactions.length === 0 && attempts < 4) {
       await sleep(2000);
@@ -237,7 +219,6 @@ function detectRecurringCharges(transactions) {
 
   for (const merchant in groups) {
     const charges = groups[merchant].sort((a, b) => new Date(a.date) - new Date(b.date));
-
     if (charges.length < 2) continue;
 
     const amounts = charges.map(c => c.amount);
@@ -261,15 +242,8 @@ function detectRecurringCharges(transactions) {
 
     const lastCharge = charges[charges.length - 1];
     const daysSinceLastCharge = Math.floor((Date.now() - new Date(lastCharge.date).getTime()) / (1000 * 60 * 60 * 24));
-
     let isIdle = daysSinceLastCharge > avgGapDays + 30;
 
-    // TEMPORARY TESTING OVERRIDE — forces the very first detected
-    // subscription to show as "idle" so the cancel/paywall flow can be
-    // tested even when the real test data has nothing genuinely idle.
-    // Only active when FORCE_IDLE_FOR_TESTING=true is set in Render's
-    // Environment Variables. Remove this block (and the env var) once
-    // testing is done.
     if (process.env.FORCE_IDLE_FOR_TESTING === 'true' && subscriptions.length === 0) {
       isIdle = true;
     }
@@ -300,7 +274,7 @@ app.get('/api/health', (req, res) => {
 });
 
 // -----------------------------------------------------------
-// STRIPE: 1. CREATE CHECKOUT SESSION
+// STRIPE: CREATE CHECKOUT SESSION
 // -----------------------------------------------------------
 app.post('/api/create_checkout_session', async (req, res) => {
   try {
@@ -310,17 +284,15 @@ app.post('/api/create_checkout_session', async (req, res) => {
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
-      line_items: [
-        {
-          price_data: {
-            currency: 'usd',
-            product_data: { name: 'Ledger Plus — cancel idle subscriptions' },
-            unit_amount: 1500,
-            recurring: { interval: 'month' },
-          },
-          quantity: 1,
+      line_items: [{
+        price_data: {
+          currency: 'usd',
+          product_data: { name: 'Ledger Plus — cancel idle subscriptions' },
+          unit_amount: 1500,
+          recurring: { interval: 'month' },
         },
-      ],
+        quantity: 1,
+      }],
       client_reference_id: userId,
       metadata: { userId },
       success_url: `${origin}/?subscribed=true`,
@@ -335,12 +307,13 @@ app.post('/api/create_checkout_session', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// STRIPE: 2. CHECK SUBSCRIPTION STATUS
+// STRIPE: CHECK SUBSCRIPTION STATUS
 // -----------------------------------------------------------
 app.get('/api/subscription-status/:userId?', async (req, res) => {
   const userId = req.params.userId || 'default_user';
   const val = await redis.get(subscriberKey(userId));
-  res.json({ isSubscribed: val === 'true' });
+  console.log(`Subscription status check for ${userId}: val=${JSON.stringify(val)} type=${typeof val}`);
+  res.json({ isSubscribed: isSubscriberValue(val) });
 });
 
 const PORT = process.env.PORT || 3000;
