@@ -485,11 +485,16 @@ async function handlePostCheckoutReturn() {
   for (let i = 0; i < 5; i++) {
     await checkSubscriptionStatus();
     if (isSubscribed) {
-      showToast('Subscription active — you can now cancel idle subscriptions.');
+      showToast('Subscription active — loading your results…');
+      goTo('loading');
+      document.getElementById('loadingText').textContent = 'READING TRANSACTIONS…';
+      await loadTransactions();
       return;
     }
     await new Promise(r => setTimeout(r, 1500));
   }
+
+  showToast('Subscription confirmed! Connect your bank to get started.');
 }
 </script>
 
