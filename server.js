@@ -161,21 +161,35 @@ function sleep(ms) {
 }
 
 async function fetchAllTransactions(accessToken) {
-  let allTransactions = [];
-  let cursor = undefined;
-  let hasMore = true;
+  // Retry the full pagination from scratch if Plaid reports that the
+  // underlying data changed mid-page (TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      let allTransactions = [];
+      let cursor = undefined;
+      let hasMore = true;
 
-  while (hasMore) {
-    const syncResponse = await plaidClient.transactionsSync({
-      access_token: accessToken,
-      cursor: cursor,
-    });
-    allTransactions = allTransactions.concat(syncResponse.data.added);
-    hasMore = syncResponse.data.has_more;
-    cursor = syncResponse.data.next_cursor;
+      while (hasMore) {
+        const syncResponse = await plaidClient.transactionsSync({
+          access_token: accessToken,
+          cursor: cursor,
+        });
+        allTransactions = allTransactions.concat(syncResponse.data.added);
+        hasMore = syncResponse.data.has_more;
+        cursor = syncResponse.data.next_cursor;
+      }
+
+      return allTransactions;
+    } catch (err) {
+      const code = err.response?.data?.error_code;
+      if (code === 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION' && attempt < 2) {
+        console.log('Plaid data changed during pagination, retrying...');
+        await sleep(1000);
+        continue;
+      }
+      throw err;
+    }
   }
-
-  return allTransactions;
 }
 
 app.get('/api/transactions/:userId?', async (req, res) => {
@@ -189,6 +203,8 @@ app.get('/api/transactions/:userId?', async (req, res) => {
 
     let allTransactions = await fetchAllTransactions(accessToken);
 
+    // Retry up to 4 times if Plaid hasn't finished preparing data yet
+    // on a freshly linked account.
     let attempts = 0;
     while (allTransactions.length === 0 && attempts < 4) {
       await sleep(2000);
