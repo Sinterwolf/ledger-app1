@@ -11,9 +11,24 @@ const express = require('express');
 const cors = require('cors');
 const { Configuration, PlaidApi, PlaidEnvironments } = require('plaid');
 const Stripe = require('stripe');
+const { Redis } = require('@upstash/redis');
 
 const app = express();
 app.use(cors());
+
+// -----------------------------------------------------------
+// REDIS SETUP
+// Upstash Redis persists accessTokens and paidSubscribers across
+// server restarts and Render sleep/wake cycles, replacing the
+// previous in-memory objects that wiped on every restart.
+// -----------------------------------------------------------
+const redis = new Redis({
+  url: process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+});
+
+function accessTokenKey(userId) { return `access_token:${userId}`; }
+function subscriberKey(userId) { return `subscriber:${userId}`; }
 
 // -----------------------------------------------------------
 // STRIPE WEBHOOK ROUTE — defined here, BEFORE the global JSON parser
@@ -24,12 +39,8 @@ app.use(cors());
 // and signature verification would fail every time (exactly the bug
 // we hit and fixed). express.raw() here ensures this specific route
 // gets the untouched raw bytes Stripe actually signed.
-//
-// The stripe client and paidSubscribers tracker are set up further
-// below; this route just needs raw-body handling registered early —
-// the actual function body runs later when Stripe calls it.
 // -----------------------------------------------------------
-app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req, res) => {
+app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
@@ -40,24 +51,20 @@ app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), (req,
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Unconditional diagnostic log — printed for EVERY webhook delivery so we
-  // can confirm in Render logs exactly what event type and payload arrived.
   console.log('Webhook received — event.type:', event.type, '| event.id:', event.id);
-  console.log('Webhook event.data.object:', JSON.stringify(event.data.object, null, 2));
 
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object;
     const userId = session.client_reference_id || session.metadata?.userId || 'default_user';
-    paidSubscribers[userId] = true;
+    await redis.set(subscriberKey(userId), 'true');
     console.log(`Payment confirmed for user: ${userId}`);
   }
 
-  // Also handle cancellations, so access is revoked if they unsubscribe later.
   if (event.type === 'customer.subscription.deleted') {
     const subscription = event.data.object;
     const userId = subscription.metadata?.userId;
     if (userId) {
-      paidSubscribers[userId] = false;
+      await redis.del(subscriberKey(userId));
       console.log(`Subscription canceled for user: ${userId}`);
     }
   }
@@ -83,11 +90,6 @@ app.get('/', (req, res) => {
 
 // -----------------------------------------------------------
 // PLAID SETUP
-// PLAID_ENV controls which Plaid environment we talk to:
-//   "sandbox"     = fake banks, fake data, totally free, unlimited use
-//   "development" / "production" = real banks, real data (limited free calls)
-// You set these as "Environment Variables" in Render — never written
-// directly in this file, so your secret keys don't end up on GitHub.
 // -----------------------------------------------------------
 const PLAID_ENV = process.env.PLAID_ENV || 'sandbox';
 
@@ -103,34 +105,13 @@ const configuration = new Configuration({
 
 const plaidClient = new PlaidApi(configuration);
 
-// In-memory storage of access tokens, keyed by a simple user id.
-// NOTE: this is fine for a personal/family project with a couple of
-// users. A real public product would use a real database instead,
-// since this resets every time the server restarts.
-const accessTokens = {};
-
 // -----------------------------------------------------------
 // STRIPE SETUP
-// Stripe handles the actual $15/month billing. We use "Stripe Checkout" —
-// a secure, pre-built payment page hosted BY Stripe, not by us. This means
-// we never touch or see real card numbers, which is both simpler and much
-// safer than building our own payment form.
-//
-// STRIPE_SECRET_KEY is set as an Environment Variable in Render, same as
-// the Plaid keys — never written directly in this file.
 // -----------------------------------------------------------
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
-// In-memory tracking of who has an active $15/mo subscription, keyed by
-// the same simple user id used for Plaid. Like accessTokens above, this
-// resets if the server restarts — fine for personal/testing use, but a
-// real product would use a permanent database instead.
-const paidSubscribers = {};
-
 // -----------------------------------------------------------
 // 1. CREATE LINK TOKEN
-// The frontend calls this first. It asks Plaid for a temporary
-// "link_token" that's used to open the Plaid bank-connection popup.
 // -----------------------------------------------------------
 app.post('/api/create_link_token', async (req, res) => {
   try {
@@ -153,11 +134,6 @@ app.post('/api/create_link_token', async (req, res) => {
 
 // -----------------------------------------------------------
 // 2. EXCHANGE PUBLIC TOKEN
-// After someone successfully connects their bank in the Plaid
-// popup, the frontend sends us a temporary "public_token". We
-// trade that for a permanent "access_token" which is what we use
-// going forward to fetch their transactions. The access_token
-// NEVER goes back to the browser — it stays only on this server.
 // -----------------------------------------------------------
 app.post('/api/exchange_public_token', async (req, res) => {
   try {
@@ -168,7 +144,7 @@ app.post('/api/exchange_public_token', async (req, res) => {
     });
 
     const accessToken = response.data.access_token;
-    accessTokens[userId || 'default_user'] = accessToken;
+    await redis.set(accessTokenKey(userId || 'default_user'), accessToken);
 
     res.json({ success: true });
   } catch (err) {
@@ -178,21 +154,7 @@ app.post('/api/exchange_public_token', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// 3. FETCH TRANSACTIONS + DETECT SUBSCRIPTIONS (DIY version)
-//
-// NOTE: Plaid has an official "/transactions/recurring/get" endpoint
-// that does this automatically, but it requires requesting separate
-// product access from Plaid first — an extra approval step. To keep
-// this $0-and-no-waiting, we instead pull raw transactions with the
-// standard /transactions/sync endpoint (available on every account,
-// no extra approval) and detect recurring charges ourselves with
-// simple grouping logic below.
-//
-// IMPORTANT: right after a bank is first connected, Plaid (especially
-// in Sandbox) needs a brief moment to finish generating/loading
-// transaction data. Calling sync too quickly can return an empty or
-// incomplete result. To handle this, we retry a few times with a short
-// delay if we get back zero transactions on the first try.
+// 3. FETCH TRANSACTIONS + DETECT SUBSCRIPTIONS
 // -----------------------------------------------------------
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -219,7 +181,7 @@ async function fetchAllTransactions(accessToken) {
 app.get('/api/transactions/:userId?', async (req, res) => {
   try {
     const userId = req.params.userId || 'default_user';
-    const accessToken = accessTokens[userId];
+    const accessToken = await redis.get(accessTokenKey(userId));
 
     if (!accessToken) {
       return res.status(400).json({ error: 'No connected bank account for this user yet.' });
@@ -227,8 +189,6 @@ app.get('/api/transactions/:userId?', async (req, res) => {
 
     let allTransactions = await fetchAllTransactions(accessToken);
 
-    // Retry up to 4 times (about 8 seconds total) if Plaid hasn't
-    // finished preparing the data yet on a freshly linked account.
     let attempts = 0;
     while (allTransactions.length === 0 && attempts < 4) {
       await sleep(2000);
@@ -246,17 +206,10 @@ app.get('/api/transactions/:userId?', async (req, res) => {
 
 // -----------------------------------------------------------
 // Recurring-charge detection logic.
-// Groups transactions by merchant name, looks for ones that repeat
-// at least twice with a similar amount, estimates frequency from the
-// average gap between charges, and flags anything overdue as "idle."
-// This is intentionally simple — a real product would refine this a
-// lot — but it's enough to demonstrate the concept end-to-end.
 // -----------------------------------------------------------
 function detectRecurringCharges(transactions) {
-  // Only look at money going OUT (positive amount = outflow in Plaid's model)
   const outflows = transactions.filter(t => t.amount > 0 && t.merchant_name);
 
-  // Group by merchant name
   const groups = {};
   outflows.forEach(t => {
     const key = t.merchant_name;
@@ -269,16 +222,13 @@ function detectRecurringCharges(transactions) {
   for (const merchant in groups) {
     const charges = groups[merchant].sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    // Need at least 2 charges to call it "recurring"
     if (charges.length < 2) continue;
 
-    // Check amounts are similar (within 10%) across charges
     const amounts = charges.map(c => c.amount);
     const avgAmount = amounts.reduce((a, b) => a + b, 0) / amounts.length;
     const amountsConsistent = amounts.every(a => Math.abs(a - avgAmount) / avgAmount < 0.10);
     if (!amountsConsistent) continue;
 
-    // Estimate frequency from average gap between charges, in days
     const gaps = [];
     for (let i = 1; i < charges.length; i++) {
       const days = (new Date(charges[i].date) - new Date(charges[i - 1].date)) / (1000 * 60 * 60 * 24);
@@ -296,7 +246,6 @@ function detectRecurringCharges(transactions) {
     const lastCharge = charges[charges.length - 1];
     const daysSinceLastCharge = Math.floor((Date.now() - new Date(lastCharge.date).getTime()) / (1000 * 60 * 60 * 24));
 
-    // Idle if we're overdue for the next expected charge by a good margin
     let isIdle = daysSinceLastCharge > avgGapDays + 30;
 
     // TEMPORARY TESTING OVERRIDE — forces the very first detected
@@ -324,8 +273,7 @@ function detectRecurringCharges(transactions) {
 }
 
 // -----------------------------------------------------------
-// Health check — lets you confirm the server is alive by just
-// visiting the URL in a browser.
+// Health check
 // -----------------------------------------------------------
 app.get('/api/health', (req, res) => {
   res.json({
@@ -337,10 +285,6 @@ app.get('/api/health', (req, res) => {
 
 // -----------------------------------------------------------
 // STRIPE: 1. CREATE CHECKOUT SESSION
-// The frontend calls this when someone clicks "Subscribe for $15/mo".
-// We create a Stripe Checkout Session and send back its URL — the
-// frontend then redirects the browser there. The actual card entry
-// happens entirely on Stripe's own secure page, not on our site.
 // -----------------------------------------------------------
 app.post('/api/create_checkout_session', async (req, res) => {
   try {
@@ -355,7 +299,7 @@ app.post('/api/create_checkout_session', async (req, res) => {
           price_data: {
             currency: 'usd',
             product_data: { name: 'Ledger Plus — cancel idle subscriptions' },
-            unit_amount: 1500, // $15.00, in cents
+            unit_amount: 1500,
             recurring: { interval: 'month' },
           },
           quantity: 1,
@@ -375,19 +319,12 @@ app.post('/api/create_checkout_session', async (req, res) => {
 });
 
 // -----------------------------------------------------------
-// STRIPE: 2. WEBHOOK
-// (Defined earlier in this file, before the global JSON parser — see
-// the comment near the top explaining why. Nothing else needed here.)
+// STRIPE: 2. CHECK SUBSCRIPTION STATUS
 // -----------------------------------------------------------
-
-// -----------------------------------------------------------
-// STRIPE: 3. CHECK SUBSCRIPTION STATUS
-// The frontend calls this to find out whether to show the paywall or
-// let the person through to cancel subscriptions.
-// -----------------------------------------------------------
-app.get('/api/subscription-status/:userId?', (req, res) => {
+app.get('/api/subscription-status/:userId?', async (req, res) => {
   const userId = req.params.userId || 'default_user';
-  res.json({ isSubscribed: !!paidSubscribers[userId] });
+  const val = await redis.get(subscriberKey(userId));
+  res.json({ isSubscribed: val === 'true' });
 });
 
 const PORT = process.env.PORT || 3000;
